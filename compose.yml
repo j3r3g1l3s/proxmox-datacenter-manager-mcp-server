@@ -1,0 +1,12 @@
+services:
+  pdm-mcp-server:
+    image: jer3m/pdm-mcp-server:latest
+    ports:
+      - "3000:3000"
+    environment:
+      PDM_URL: https://pdm.example.com:8443
+      PDM_TOKEN_ID: readonly@pdm!mcp
+      PDM_TOKEN_SECRET: replace-with-token-secret
+      PDM_TLS_INSECURE: "false"
+      MCP_PORT: "3000"
+    restart: unless-stopped

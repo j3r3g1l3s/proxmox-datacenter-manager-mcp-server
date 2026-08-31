@@ -1,0 +1,40 @@
+{
+  "name": "pdm-mcp-server",
+  "version": "0.1.0",
+  "description": "Read-only MCP server for Proxmox Datacenter Manager (PDM), exposing VMs, containers, nodes, storages and remote summaries.",
+  "keywords": [
+    "proxmox",
+    "proxmox-datacenter-manager",
+    "pdm",
+    "mcp",
+    "model-context-protocol",
+    "infrastructure",
+    "virtualization"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/j3r3g1l3s/pdm-mcp-server.git"
+  },
+  "homepage": "https://github.com/j3r3g1l3s/pdm-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/j3r3g1l3s/pdm-mcp-server/issues"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test dist/pdm.test.js dist/http.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
