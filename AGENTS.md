@@ -37,3 +37,26 @@ Preferred examples:
 Before considering a change complete, review every modified file and ensure no real infrastructure identifier, customer name, hostname, private IP, credential, secret, or production-specific value has been introduced.
 
 When an existing test contains a real-world identifier, sanitize it as part of the change rather than copying or extending it.
+
+## Guía de Arquitectura para Nuevas Features
+
+Al agregar nuevas herramientas o features al servidor MCP, seguir estrictamente el patrón modular en 4 capas:
+
+1. **Constantes de nombres (`src/tool-names.ts`):**
+   - Declarar el identificador de la tool en `TOOL_NAMES`.
+   - Utilizar nombres cortos en minúsculas y snake_case (ej. `list_tasks`, `get_task`), sin prefijos como `pdm_`.
+
+2. **Cliente PDM y Proyección de Datos (`src/pdm.ts`):**
+   - Implementar las llamadas HTTP a través de `pdmRequest` respetando las rutas reales de la API de PDM (`/api2/json/...`).
+   - **Eficiencia de tokens y vistas:** Todas las tools de listado deben soportar al menos una vista compacta `summary` (por defecto) y una vista `full`. Las métricas deben normalizarse (bytes a GiB con `bytesToGiB`, ratios a porcentajes con `ratioToPercent`).
+   - **Límites:** Limitar la cantidad de registros por defecto (ej. `limit: 20`) para no desbordar el contexto del modelo.
+   - **Sanitización:** Pasar siempre los resultados completos por `sanitizeSecrets` para ocultar claves, contraseñas, tokens y claves SSH (`[REDACTED]`).
+
+3. **Definición de Schemas y Registro (`src/tools.ts`):**
+   - Registrar la herramienta con `server.registerTool`.
+   - Definir siempre `annotations: { readOnlyHint: true }` a menos que el usuario autorice expresamente operaciones de escritura.
+   - Validar entradas con `zod` y proveer `.describe()` claros en los parámetros.
+
+4. **Tests Automatizados (`src/pdm.test.ts` y `src/http.test.ts`):**
+   - Incorporar mocks en `pdm.test.ts` que validen las rutas llamadas, los parámetros de búsqueda y las proyecciones de datos.
+   - El test en `http.test.ts` valida automáticamente que `ALL_TOOL_NAMES` coincida con las tools expuestas y que todas tengan `readOnlyHint: true`.

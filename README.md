@@ -42,12 +42,14 @@ Servidor MCP estrictamente read-only para Proxmox Datacenter Manager (PDM). Expo
 | `list_storages` | Inventario global o `GET .../nodes/{node}/storage` | Estado general, sin listar contenido |
 | `get_storage` | Inventario global y `GET .../storage/{storage}/status` | Estado de un storage, sin su contenido |
 | `get_remote_summary` | `GET .../nodes`, `/qemu` y `/lxc` | Totales y capacidad física sin listar cada recurso |
+| `list_tasks` | `GET .../cluster/tasks` o `GET .../nodes/{node}/tasks` | Tareas recientes y activas (cluster o por nodo/vmid) |
+| `get_task` | `GET .../nodes/{node}/tasks/{upid}/status` | Estado detallado de una tarea por UPID |
 
 En la tabla, `...` significa `/api2/json/pve/remotes/{remote}`. La colección de configuración de remotes es distinta y conserva `/api2/json/remotes/remote`. Los nombres de remote, node y storage se codifican como segmentos URL. Las respuestas incluyen texto JSON por compatibilidad y `structuredContent` para clientes MCP que lo soportan.
 
 El inventario global envía `max-age=300` por defecto para reutilizar el cache de PDM y evitar recolectar todos los remotes en cada consulta. `list_resources` acepta `max_age`; usá `0` cuando necesites forzar una actualización. Con `remote` se consulta directamente `/pve/remotes/{remote}/resources`, evitando el fan-out global. `PDM_TIMEOUT_MS` sigue siendo configurable y mantiene su default de 15 segundos.
 
-`get_vm` y `get_container` eliminan claves sensibles como passwords, tokens, secrets, claves SSH y valores equivalentes embebidos. El servidor nunca incluye el header de autorización ni el body de un error PDM en sus errores.
+`get_vm`, `get_container` y las consultas de tareas eliminan claves sensibles como passwords, tokens, secrets, claves SSH y valores equivalentes embebidos. El servidor nunca incluye el header de autorización ni el body de un error PDM en sus errores.
 
 ## Respuestas compactas
 
@@ -56,7 +58,7 @@ Las tools de listado devuelven una frase corta en `content` y los datos una sola
 - `list_vms` y `list_containers`: `summary`, `hardware`, `runtime` o `full`.
 - `list_nodes`: `summary`, `capacity`, `runtime` o `full`.
 - `list_storages`: `summary`, `capacity` o `full`.
-- `list_resources`: `summary` o `full`.
+- `list_resources` y `list_tasks`: `summary` o `full`.
 
 `summary` sirve para descubrir e identificar recursos. `hardware`/`capacity` normalizan bytes a GiB; `runtime` normaliza ratios a porcentajes. `full` debe pedirse explícitamente y continúa sanitizando secretos. Para el detalle de un único elemento usá su tool `get_*`.
 
@@ -121,6 +123,10 @@ list_containers {}
 list_storages {}
 list_storages {"remote":"LAB-A","node":"pve-test-01"}
 get_remote_summary {"remote":"LAB-A"}
+list_tasks {"remote":"LAB-A"}
+list_tasks {"remote":"LAB-A","errors_only":true}
+list_tasks {"remote":"LAB-A","node":"pve-test-01","vmid":105}
+get_task {"remote":"LAB-A","upid":"UPID:pve-test-01:00001234:00005678:65A4B3C2:vzdump:105:readonly@pdm!mcp:"}
 ```
 
 Para Codex:

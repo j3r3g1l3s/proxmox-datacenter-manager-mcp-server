@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  PdmClient, filterResources, formatRemotes, loadConfig, pdmAuthorization, pdmRequest,
-  projectGuest, projectNode, projectResource, projectStorage, pveRemotePath, remoteListPath,
+  PdmClient, filterResources, formatRemotes, loadConfig, parseNodeFromUpid, pdmAuthorization, pdmRequest,
+  projectGuest, projectNode, projectResource, projectStorage, projectTask, pveRemotePath, remoteListPath,
   sanitizeSecrets, type PdmExecutor, type PdmHttpRequest, type PdmRecord,
 } from "./pdm.js";
 import { ALL_TOOL_NAMES, TOOL_NAMES } from "./tool-names.js";
@@ -283,8 +283,82 @@ test("tool registry names are canonical and complete", () => {
   assert.deepEqual(ALL_TOOL_NAMES, [
     "list_remotes", "list_resources", "list_vms", "get_vm", "list_nodes",
     "get_node", "list_containers", "get_container", "list_storages", "get_storage",
-    "get_remote_summary",
+    "get_remote_summary", "list_tasks", "get_task",
   ]);
   assert.equal(Object.values(TOOL_NAMES).some(name => name.startsWith("pdm_")), false);
   assert.equal(pdmAuthorization(config), "PDMAPIToken test-user@pdm!test-token:test-secret");
+});
+
+test("parseNodeFromUpid extracts node from valid UPIDs", () => {
+  assert.equal(parseNodeFromUpid("UPID:pve-test-01:00001234:00005678:65A4B3C2:vzdump:100:root@pam:"), "pve-test-01");
+  assert.equal(parseNodeFromUpid("invalid:upid"), undefined);
+  assert.equal(parseNodeFromUpid(""), undefined);
+});
+
+test("projectTask formats summary and full views and sanitizes secrets", () => {
+  const raw = {
+    remote: "LAB-A",
+    node: "pve-test-01",
+    upid: "UPID:pve-test-01:00001234:00005678:65A4B3C2:vzdump:100:root@pam:",
+    type: "vzdump",
+    id: "100",
+    status: "OK",
+    user: "readonly@pdm!mcp",
+    starttime: 1700000000,
+    endtime: 1700000100,
+    password: "supersecretpassword",
+  };
+  assert.deepEqual(projectTask(raw, "summary"), {
+    remote: "LAB-A",
+    node: "pve-test-01",
+    upid: "UPID:pve-test-01:00001234:00005678:65A4B3C2:vzdump:100:root@pam:",
+    type: "vzdump",
+    id: "100",
+    status: "OK",
+    user: "readonly@pdm!mcp",
+    starttime: 1700000000,
+    endtime: 1700000100,
+  });
+  const full = projectTask(raw, "full");
+  assert.equal(full.password, "[REDACTED]");
+});
+
+test("getTaskList queries cluster tasks when node is not specified and applies filters", async () => {
+  const { client, requests } = mockClient(() => [
+    { upid: "UPID:pve-test-01:001:vzdump:100", type: "vzdump", status: "OK", node: "pve-test-01" },
+  ]);
+  const tasks = await client.getTaskList({ remote: "LAB-A", limit: 10, errorsOnly: true });
+  assert.equal(requests[0].url.pathname, "/api2/json/pve/remotes/LAB-A/cluster/tasks");
+  assert.equal(requests[0].url.searchParams.get("limit"), "10");
+  assert.equal(requests[0].url.searchParams.get("errors"), "1");
+  assert.equal(tasks[0].remote, "LAB-A");
+  assert.equal(tasks[0].node, "pve-test-01");
+});
+
+test("getTaskList queries node tasks when node is specified", async () => {
+  const { client, requests } = mockClient(() => [
+    { upid: "UPID:pve-test-01:001:vzdump:100", type: "vzdump", status: "OK" },
+  ]);
+  const tasks = await client.getTaskList({ remote: "LAB-A", node: "pve-test-01", vmid: 100 });
+  assert.equal(requests[0].url.pathname, "/api2/json/pve/remotes/LAB-A/nodes/pve-test-01/tasks");
+  assert.equal(requests[0].url.searchParams.get("vmid"), "100");
+  assert.equal(tasks[0].remote, "LAB-A");
+  assert.equal(tasks[0].node, "pve-test-01");
+});
+
+test("getTask queries task status with explicit or inferred node", async () => {
+  const { client, requests } = mockClient(() => ({ status: "stopped", exitstatus: "OK" }));
+  const upid = "UPID:pve-test-01:00001234:00005678:65A4B3C2:vzdump:100:root@pam:";
+
+  // Inferred node
+  const resInferred = await client.getTask("LAB-A", upid);
+  assert.equal(requests[0].url.pathname, `/api2/json/pve/remotes/LAB-A/nodes/pve-test-01/tasks/${encodeURIComponent(upid)}/status`);
+  assert.equal(resInferred.node, "pve-test-01");
+
+  // Explicit node
+  await client.getTask("LAB-A", "custom-upid", "pve-test-02");
+  assert.equal(requests[1].url.pathname, "/api2/json/pve/remotes/LAB-A/nodes/pve-test-02/tasks/custom-upid/status");
+
+  // Missing node error
+  await assert.rejects(client.getTask("LAB-A", "invalid-upid"), /Node could not be determined/);
 });

@@ -9,10 +9,12 @@ export type PdmExecutor = (request: PdmHttpRequest) => Promise<PdmHttpResponse>;
 export interface ResourceFilters { remote?: string; resourceType?: string; node?: string; name?: string; vmid?: number; status?: string; maxAge?: number }
 export interface GuestFilters { remote?: string; node?: string; name?: string; status?: string }
 export interface StorageFilters { remote?: string; node?: string; type?: string }
+export interface TaskFilters { remote: string; node?: string; vmid?: number; errorsOnly?: boolean; limit?: number }
 export type GuestView = "summary" | "hardware" | "runtime" | "full";
 export type NodeView = "summary" | "capacity" | "runtime" | "full";
 export type StorageView = "summary" | "capacity" | "full";
 export type ResourceView = "summary" | "full";
+export type TaskView = "summary" | "full";
 interface PdmResponse { data: unknown }
 
 export function loadConfig(env = process.env): PdmConfig {
@@ -270,6 +272,29 @@ export function projectResource(record: PdmRecord, view: ResourceView): PdmRecor
   });
 }
 
+export function parseNodeFromUpid(upid: string): string | undefined {
+  const parts = upid.split(":");
+  if (parts.length >= 2 && parts[0] === "UPID" && parts[1]?.trim() !== "") {
+    return parts[1];
+  }
+  return undefined;
+}
+
+export function projectTask(record: PdmRecord, view: TaskView): PdmRecord {
+  if (view === "full") return compactDeep(sanitizeSecrets(record)) as PdmRecord;
+  return compact({
+    remote: value(record, "remote"),
+    node: value(record, "node"),
+    upid: value(record, "upid"),
+    type: value(record, "type"),
+    id: value(record, "id"),
+    status: value(record, "status"),
+    user: value(record, "user", "user_id"),
+    starttime: numberValue(record, "starttime"),
+    endtime: numberValue(record, "endtime"),
+  });
+}
+
 function countStatuses(records: PdmRecord[], active: string, inactive: string): PdmRecord {
   return {
     total: records.length,
@@ -394,6 +419,37 @@ export class PdmClient {
         ram_total_gib: ramBytes ? bytesToGiB(ramBytes) : undefined,
       }),
     });
+  }
+
+  async getTaskList(filters: TaskFilters): Promise<PdmRecord[]> {
+    const query: Record<string, QueryValue> = {};
+    if (filters.limit !== undefined) query.limit = filters.limit;
+    if (filters.errorsOnly) query.errors = 1;
+    if (filters.vmid !== undefined) query.vmid = filters.vmid;
+
+    const path = filters.node
+      ? pveRemotePath(filters.remote, `/nodes/${encodePathSegment(filters.node)}/tasks`)
+      : pveRemotePath(filters.remote, "/cluster/tasks");
+
+    const records = asRecords(await this.request(path, query), path);
+    return withRemote(records, filters.remote).map(record => {
+      if (filters.node && record.node === undefined) return { node: filters.node, ...record };
+      return record;
+    });
+  }
+
+  async getTask(remote: string, upid: string, node?: string): Promise<PdmRecord> {
+    const resolvedNode = node || parseNodeFromUpid(upid);
+    if (!resolvedNode) {
+      throw new Error("Node could not be determined for task. Please provide the node parameter.");
+    }
+    const path = pveRemotePath(remote, `/nodes/${encodePathSegment(resolvedNode)}/tasks/${encodePathSegment(upid)}/status`);
+    return sanitizeSecrets({
+      remote,
+      node: resolvedNode,
+      upid,
+      status: asRecord(await this.request(path), path),
+    }) as PdmRecord;
   }
 }
 

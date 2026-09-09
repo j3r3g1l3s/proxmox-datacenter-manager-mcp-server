@@ -68,6 +68,11 @@ test("stateless HTTP initialize and tools/list expose every read-only tool", asy
     const properties = ((listVms?.inputSchema as Record<string, unknown>).properties as Record<string, Record<string, unknown>>);
     assert.deepEqual(properties.view.enum, ["summary", "hardware", "runtime", "full"]);
     assert.equal(properties.view.default, "summary");
+
+    const listTasks = tools.find(tool => tool.name === "list_tasks");
+    const taskProperties = ((listTasks?.inputSchema as Record<string, unknown>).properties as Record<string, Record<string, unknown>>);
+    assert.deepEqual(taskProperties.view.enum, ["summary", "full"]);
+    assert.equal(taskProperties.view.default, "summary");
   } finally {
     child.kill();
   }

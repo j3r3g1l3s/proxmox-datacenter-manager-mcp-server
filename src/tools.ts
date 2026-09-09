@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
-  PdmClient, projectGuest, projectNode, projectResource, projectStorage,
+  PdmClient, projectGuest, projectNode, projectResource, projectStorage, projectTask,
   type PdmRecord, type ResourceFilters,
 } from "./pdm.js";
 import { TOOL_NAMES } from "./tool-names.js";
@@ -13,6 +13,7 @@ const guestView = z.enum(["summary", "hardware", "runtime", "full"]).default("su
 const nodeView = z.enum(["summary", "capacity", "runtime", "full"]).default("summary");
 const storageView = z.enum(["summary", "capacity", "full"]).default("summary");
 const resourceView = z.enum(["summary", "full"]).default("summary");
+const taskView = z.enum(["summary", "full"]).default("summary");
 
 export function listResult(key: string, records: PdmRecord[], label: string) {
   const structuredContent = { count: records.length, [key]: records };
@@ -137,5 +138,41 @@ export function registerTools(server: McpServer, client: PdmClient): void {
   }, async ({ remote }) => {
     try { return objectResult(await client.getRemoteSummary(remote), `Retrieved summary for remote ${remote}.`); }
     catch (error) { return toolError(error); }
+  });
+
+  server.registerTool(TOOL_NAMES.listTasks, {
+    description: "List recent and active tasks for a remote PVE cluster or specific node. Defaults to a compact summary. Use for tracking backups, migrations, or troubleshooting failures.",
+    annotations: readOnly,
+    inputSchema: {
+      remote: z.string().trim().min(1).describe("Remote name (e.g. LAB-A)"),
+      node: optionalText.describe("Optional node name to list node-specific tasks"),
+      vmid: vmid.optional().describe("Filter tasks by VM/container ID (requires node)"),
+      errors_only: z.boolean().optional().describe("Only return failed tasks"),
+      limit: z.number().int().positive().max(100).default(20).describe("Maximum number of tasks to return (default: 20, max: 100)"),
+      view: taskView,
+    },
+  }, async ({ remote, node, vmid, errors_only, limit, view }) => {
+    try {
+      const records = await client.getTaskList({ remote, node, vmid, errorsOnly: errors_only, limit });
+      return listResult("tasks", records.map(record => projectTask(record, view)), "tasks");
+    } catch (error) {
+      return toolError(error);
+    }
+  });
+
+  server.registerTool(TOOL_NAMES.getTask, {
+    description: "Get detailed read-only status and execution result of a specific task by UPID.",
+    annotations: readOnly,
+    inputSchema: {
+      remote: z.string().trim().min(1).describe("Remote name (e.g. LAB-A)"),
+      upid: z.string().trim().min(1).describe("Unique Process ID of the task (UPID)"),
+      node: optionalText.describe("Node where the task ran (inferred from UPID if omitted)"),
+    },
+  }, async ({ remote, upid, node }) => {
+    try {
+      return objectResult(await client.getTask(remote, upid, node), `Retrieved task ${upid}.`);
+    } catch (error) {
+      return toolError(error);
+    }
   });
 }
