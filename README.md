@@ -48,6 +48,7 @@ Servidor MCP estrictamente read-only para Proxmox Datacenter Manager (PDM). Expo
 En la tabla, `...` significa `/api2/json/pve/remotes/{remote}`. La colección de configuración de remotes es distinta y conserva `/api2/json/remotes/remote`. Los nombres de remote, node y storage se codifican como segmentos URL. Las respuestas incluyen texto JSON por compatibilidad y `structuredContent` para clientes MCP que lo soportan.
 
 El inventario global envía `max-age=300` por defecto para reutilizar el cache de PDM y evitar recolectar todos los remotes en cada consulta. `list_resources` acepta `max_age`; usá `0` cuando necesites forzar una actualización. Con `remote` se consulta directamente `/pve/remotes/{remote}/resources`, evitando el fan-out global. `PDM_TIMEOUT_MS` sigue siendo configurable y mantiene su default de 15 segundos.
+El inventario global envía `max-age=300` por defecto para reutilizar el cache de PDM y evitar recolectar todos los remotes en cada consulta. `list_resources` acepta `max_age`; usá `0` cuando necesites forzar una actualización. Con `remote` se consulta directamente `/pve/remotes/{remote}/resources`, evitando el fan-out global. `PDM_TIMEOUT_MS` sigue siendo configurable y mantiene su default de 60 segundos.
 
 `get_vm`, `get_container` y las consultas de tareas eliminan claves sensibles como passwords, tokens, secrets, claves SSH y valores equivalentes embebidos. El servidor nunca incluye el header de autorización ni el body de un error PDM en sus errores.
 
@@ -83,6 +84,7 @@ Variables opcionales:
 ```text
 PDM_TLS_INSECURE=false
 PDM_TIMEOUT_MS=15000
+PDM_TIMEOUT_MS=60000
 MCP_PORT=3000
 ```
 
