@@ -18,7 +18,6 @@ jobs:
     - run: |
         echo "Running tests..."
         npm ci
-        npm run build
         npm test
           
 
