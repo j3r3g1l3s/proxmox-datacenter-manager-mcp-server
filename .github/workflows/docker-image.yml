@@ -1,0 +1,22 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build and push the Docker image
+      run: |
+
+        docker login -u ${{ secrets.DOCKER_USER }} -p ${{ secrets.DOCKER_PASSWORD }} 
+        docker build . --file Dockerfile --tag pdm-mcp-server:${{ github.sha }} .
+
+        docker push jer3m/pdm-mcp-server:${{ github.sha }}
+    
+  
