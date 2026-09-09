@@ -5,10 +5,27 @@ on:
     branches: [ "main" ]
 jobs:
 
-  build:
+  test:
 
     runs-on: ubuntu-latest
 
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+    - run: |
+        echo "Running tests..."
+        npm ci
+        npm run build
+        npm test
+          
+
+  build:
+
+    runs-on: ubuntu-latest
+    needs: test
     steps:
     - uses: actions/checkout@v4
     - name: Build and push the Docker image
