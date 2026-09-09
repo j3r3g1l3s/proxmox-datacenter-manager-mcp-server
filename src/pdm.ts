@@ -28,7 +28,6 @@ export function loadConfig(env = process.env): PdmConfig {
   catch { throw new Error("PDM_URL must be an absolute URL, for example https://pdm.example.com:8443."); }
   if (parsedUrl.protocol !== "https:") throw new Error("PDM_URL must use HTTPS.");
 
-  const timeoutMs = Number(env.PDM_TIMEOUT_MS ?? "15000");
   const timeoutMs = Number(env.PDM_TIMEOUT_MS ?? "60000");
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error("PDM_TIMEOUT_MS must be a positive integer.");
   return { url: parsedUrl, tokenId, tokenSecret, tlsInsecure: env.PDM_TLS_INSECURE === "true", timeoutMs };
