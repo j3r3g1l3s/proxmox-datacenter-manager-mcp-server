@@ -13,9 +13,8 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build and push the Docker image
       run: |
-
-        docker login -u ${{ secrets.DOCKER_USER }} -p ${{ secrets.DOCKER_PASSWORD }} 
-        docker build . --file Dockerfile --tag pdm-mcp-server:${{ github.sha }} .
+        echo "${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USER }} --password-stdin
+        docker build --file Dockerfile --tag jer3m/pdm-mcp-server:${{ github.sha }} .
 
         docker push jer3m/pdm-mcp-server:${{ github.sha }}
     
