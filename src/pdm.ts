@@ -1,4 +1,5 @@
 import { request } from "node:https";
+import type { RequestScope } from "./auth.js";
 
 export interface PdmConfig { url: URL; tokenId: string; tokenSecret: string; tlsInsecure: boolean; timeoutMs: number }
 export type PdmRecord = Record<string, unknown>;
@@ -309,10 +310,35 @@ function one(records: PdmRecord[], description: string): PdmRecord {
 }
 
 export class PdmClient {
-  constructor(private readonly config: PdmConfig, private readonly executor: PdmExecutor = httpsExecutor) {}
+  private readonly scope?: RequestScope;
 
-  request(path: string, query: Record<string, QueryValue> = {}): Promise<unknown> {
-    return pdmRequest(this.config, "GET", path, query, this.executor);
+  constructor(private readonly config: PdmConfig, private readonly executor: PdmExecutor = httpsExecutor, scope?: RequestScope) {
+    this.scope = scope && { allowedRemotes: new Set(scope.allowedRemotes) };
+  }
+
+  private authorizeRemote(remote: string): void {
+    if (this.scope && !this.scope.allowedRemotes.has(remote)) throw new Error("Access denied.");
+  }
+
+  async request(path: string, query: Record<string, QueryValue> = {}): Promise<unknown> {
+    if (this.scope) {
+      const match = /^\/api2\/json\/pve\/remotes\/([^/]+)\//.exec(path);
+      if (this.scope.allowedRemotes.size === 0 || new URL(path, this.config.url).pathname !== path
+        || (path !== remoteListPath() && !match)) {
+        throw new Error("Access denied.");
+      }
+      if (match) this.authorizeRemote(decodeURIComponent(match[1]));
+    }
+    try {
+      const data = await pdmRequest(this.config, "GET", path, query, this.executor);
+      if (this.scope && path === remoteListPath()) {
+        return sanitizeSecrets(asRecords(data, path).filter(record => typeof record.id === "string" && this.scope!.allowedRemotes.has(record.id)));
+      }
+      return data;
+    } catch (error) {
+      if (this.scope) throw new Error("PDM request failed.");
+      throw error;
+    }
   }
 
   async getRemoteList(): Promise<PdmRecord[]> {
@@ -320,6 +346,12 @@ export class PdmClient {
   }
 
   async getResources(filters: ResourceFilters = {}): Promise<PdmRecord[]> {
+    if (this.scope && filters.remote === undefined) {
+      const records: PdmRecord[] = [];
+      // ponytail: sequential fan-out bounds PDM load; add bounded concurrency if latency requires it.
+      for (const remote of this.scope.allowedRemotes) records.push(...await this.getResources({ ...filters, remote }));
+      return records;
+    }
     if (filters.remote) {
       const path = pveRemotePath(filters.remote, "/resources");
       const records = withRemote(asRecords(await this.request(path), path), filters.remote);
@@ -439,6 +471,8 @@ export class PdmClient {
   }
 
   async getTask(remote: string, upid: string, node?: string): Promise<PdmRecord> {
+    // Authorize before the local UPID error, which can precede request().
+    this.authorizeRemote(remote);
     const resolvedNode = node || parseNodeFromUpid(upid);
     if (!resolvedNode) {
       throw new Error("Node could not be determined for task. Please provide the node parameter.");

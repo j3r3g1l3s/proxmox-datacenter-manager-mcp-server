@@ -14,6 +14,7 @@ docker run -d \
   -e PDM_TOKEN_ID='readonly@pdm!mcp' \
   -e PDM_TOKEN_SECRET='replace-with-token-secret' \
   -e PDM_TLS_INSECURE="false" \
+  -e MCP_AUTH_MODE="disabled" \
   jer3m/pdm-mcp-server:latest
 ```
 
@@ -26,6 +27,30 @@ curl http://localhost:3000/healthz
 Si PDM utiliza un certificado interno o autofirmado, cambiá `PDM_TLS_INSECURE` a `true`. Para evitar guardar el secreto en el historial del shell, también podés pasar estas mismas variables mediante `--env-file`.
 
 Servidor MCP estrictamente read-only para Proxmox Datacenter Manager (PDM). Expone Streamable HTTP stateless en `/mcp`; cada request recibe un servidor y transporte nuevos, por lo que no depende de sesiones en memoria.
+
+## Autenticación y autorización por request
+
+Elegí explícitamente `MCP_AUTH_MODE=disabled` para conservar el comportamiento sin autenticación, o `MCP_AUTH_MODE=jwt` para restringir cada request a los remotes permitidos. Si el modo falta, es desconocido o la configuración JWT es inválida, el servidor no arranca; nunca vuelve automáticamente al acceso sin restricciones. `.env.example` y Compose seleccionan `disabled` por compatibilidad.
+
+Para activar JWT, además de las credenciales PDM, configurá:
+
+```dotenv
+MCP_AUTH_MODE=jwt
+MCP_JWT_SECRET=<server-side-random-signing-secret>
+MCP_JWT_AUDIENCE=pdm-mcp
+```
+
+Reemplazá el marcador del secreto por un valor aleatorio de al menos 32 bytes, generado y almacenado en el servidor. `MCP_JWT_AUDIENCE` es opcional y tiene como valor predeterminado `pdm-mcp`; el secreto es obligatorio en modo JWT. Compose recibe estas variables del entorno o de `.env`. Para ejecutar Node directamente, cargalas en el entorno o usá `node --env-file=.env dist/index.js` después del build.
+
+El cliente debe enviar `Authorization: Bearer <jwt>` en **cada** request a `/mcp`, incluyendo `initialize` y `tools/list`. Se acepta únicamente HS256 y se verifican firma, audiencia (`aud`), vencimiento obligatorio (`exp`, segundos Unix) y `nbf` si existe. El claim `pdm_remotes` debe ser un array no vacío de strings no vacíos, por ejemplo `{"pdm_remotes":["LAB-A"]}` o `{"pdm_remotes":["LAB-A","LAB-B"]}`. Los nombres se comparan exactamente, distinguiendo mayúsculas y minúsculas; no se aceptan espacios al principio o al final. Emití tokens de corta duración con la audiencia configurada y un vencimiento futuro. Un JWT ausente, inválido o sin alcance válido recibe HTTP 401 con un error genérico. `GET /healthz` permanece público.
+
+El modo JWT está pensado para aplicaciones que derivan la autorización **del lado del servidor**. El backend emisor debe obtener los remotes permitidos de su propia política de acceso: nunca debe dejar que el usuario final elija su claim `pdm_remotes`. El secreto de firma nunca debe exponerse a browsers ni LLMs. Usá HTTPS delante de `/mcp` para proteger los bearer tokens en tránsito. Esta integración verifica tokens emitidos por tu aplicación; no implementa un servidor OAuth ni un flujo de login.
+
+Una misma instancia MCP puede atender múltiples alcances aislados. Cada request crea su propio cliente PDM con el alcance del JWT verificado. El MCP vuelve a aplicar la autorización aunque el caller o el LLM proporcionen un argumento `remote`: un remote no permitido produce `Access denied.` sin consultar PDM ni revelar otros remotes. Los argumentos de las tools no pueden ampliar el alcance.
+
+En modo JWT, `list_resources`, `list_vms`, `list_nodes`, `list_containers` y `list_storages` sin `remote` consultan secuencialmente **solo los remotes permitidos** y agregan sus resultados; no utilizan el inventario global ni lo filtran después. En esas consultas `max_age` no aplica, porque se usan las rutas existentes por remote. `list_remotes` consulta la colección de configuración y devuelve únicamente las entradas con ID autorizado, sanitizando secretos. Los errores de autenticación y los errores de requests PDM en modo JWT son genéricos y no incluyen tokens, headers, secretos ni cuerpos de respuesta.
+
+Con `MCP_AUTH_MODE=disabled`, se mantienen el inventario global y el acceso sin alcance previo. Restringí ese endpoint a clientes confiables mediante la red o un reverse proxy. Los permisos del token PDM siguen siendo el límite superior y todas las tools siguen siendo read-only.
 
 ## Tools
 
@@ -138,7 +163,7 @@ Para Codex:
 url = "http://mcp.example.internal:3000/mcp"
 ```
 
-El endpoint MCP no tiene autenticación propia. Publicá el puerto 3000 únicamente en una red interna confiable o restringilo mediante firewall/reverse proxy.
+En modo JWT, configurá también el bearer token emitido por tu backend en el cliente MCP. En modo `disabled`, publicá el puerto 3000 únicamente en una red confiable o restringilo mediante firewall/reverse proxy.
 
 ## Docker y CI
 

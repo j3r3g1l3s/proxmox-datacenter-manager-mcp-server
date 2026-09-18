@@ -3,16 +3,18 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig, PdmClient } from "./pdm.js";
 import { registerTools } from "./tools.js";
+import { authenticate, loadAuthConfig, type RequestScope } from "./auth.js";
 
 const config = loadConfig();
+const authConfig = loadAuthConfig();
 const port = Number(process.env.MCP_PORT ?? "3000");
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("MCP_PORT must be a valid TCP port.");
 }
-function createMcpServer(): McpServer {
+function createMcpServer(scope?: RequestScope): McpServer {
   const server = new McpServer({ name: "pdm-mcp-server", version: "0.1.0" });
-  registerTools(server, new PdmClient(config));
+  registerTools(server, new PdmClient(config, undefined, scope));
   return server;
 }
 
@@ -40,10 +42,18 @@ createServer(async (request, response) => {
     return send(response, 404, "Not found\n");
   }
 
+  let scope: RequestScope | undefined;
+  try {
+    scope = await authenticate(authConfig, request.headers.authorization);
+  } catch {
+    response.setHeader("WWW-Authenticate", "Bearer");
+    return send(response, 401, "Unauthorized.\n");
+  }
+
   try {
     // ponytail: read-only tools are stateless; each request receives a fresh MCP server and transport.
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    await createMcpServer().connect(transport);
+    await createMcpServer(scope).connect(transport);
     await transport.handleRequest(request, response, await readJson(request));
   } catch {
     if (!response.headersSent) {

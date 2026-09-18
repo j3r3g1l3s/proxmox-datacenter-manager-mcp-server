@@ -1,26 +1,145 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomBytes } from "node:crypto";
+import { SignJWT } from "jose";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { authenticate, type RequestScope } from "./auth.js";
 import {
   PdmClient, filterResources, formatRemotes, loadConfig, parseNodeFromUpid, pdmAuthorization, pdmRequest,
   projectGuest, projectNode, projectResource, projectStorage, projectTask, pveRemotePath, remoteListPath,
   sanitizeSecrets, type PdmExecutor, type PdmHttpRequest, type PdmRecord,
 } from "./pdm.js";
 import { ALL_TOOL_NAMES, TOOL_NAMES } from "./tool-names.js";
-import { listResult, objectResult } from "./tools.js";
+import { listResult, objectResult, registerTools } from "./tools.js";
 
 const config = loadConfig({
   PDM_URL: "https://pdm.test:8443", PDM_TOKEN_ID: "test-user@pdm!test-token",
   PDM_TOKEN_SECRET: "test-secret", PDM_TLS_INSECURE: "true",
 });
 
-function mockClient(resolver: (request: PdmHttpRequest) => unknown) {
+function mockClient(resolver: (request: PdmHttpRequest) => unknown, scope?: RequestScope) {
   const requests: PdmHttpRequest[] = [];
   const executor: PdmExecutor = async request => {
     requests.push(request);
     return { status: 200, body: JSON.stringify({ data: resolver(request) }) };
   };
-  return { client: new PdmClient(config, executor), requests };
+  return { client: new PdmClient(config, executor, scope), requests };
 }
+
+async function verifiedScope(remotes: string[]): Promise<RequestScope> {
+  const secret = randomBytes(32);
+  const jwt = await new SignJWT({ pdm_remotes: remotes }).setProtectedHeader({ alg: "HS256" })
+    .setAudience("pdm-mcp").setExpirationTime("5m").sign(secret);
+  const scope = await authenticate({ mode: "jwt", secret, audience: "pdm-mcp" }, `Bearer ${jwt}`);
+  assert.ok(scope);
+  return scope;
+}
+
+test("verified request scope allows LAB-A and rejects every remote tool before any PDM request", async () => {
+  const { client, requests } = mockClient(() => [{ vmid: 105, name: "vm-test-01" }], await verifiedScope(["LAB-A"]));
+  const server = new McpServer({ name: "test", version: "1" });
+  registerTools(server, client);
+  const mcp = new Client({ name: "test", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await mcp.connect(clientTransport);
+  try {
+    const allowed = await mcp.callTool({ name: "list_vms", arguments: { remote: "LAB-A" } });
+    assert.notEqual(allowed.isError, true);
+    assert.deepEqual(requests.map(request => request.url.pathname), ["/api2/json/pve/remotes/LAB-A/qemu"]);
+    requests.length = 0;
+    for (const name of ALL_TOOL_NAMES.filter(name => name !== "list_remotes")) {
+      const denied = await mcp.callTool({ name, arguments: {
+        remote: "LAB-B", node: "pve-test-01", vmid: 105, storage: "local-test", upid: "test-upid",
+        allowedRemotes: ["LAB-B"], pdm_remotes: ["LAB-B"],
+      } });
+      assert.equal(denied.isError, true, name);
+      assert.deepEqual(denied.content, [{ type: "text", text: "Access denied." }], name);
+    }
+    await assert.rejects(client.getTask("LAB-B", "invalid-upid"), /^Error: Access denied\.$/);
+    assert.equal(requests.length, 0);
+  } finally {
+    await mcp.close();
+    await server.close();
+  }
+});
+
+test("scoped unqualified lists query only permitted remotes and aggregate with filters intact", async () => {
+  for (const remotes of [["LAB-A"], ["LAB-A", "LAB-B"]]) {
+    const { client, requests } = mockClient(() => [
+      { type: "qemu", name: "vm-test-01", vmid: 105, status: "running", node: "pve-test-01" },
+      { type: "qemu", name: "vm-test-02", vmid: 106, status: "stopped", node: "pve-test-02" },
+      { type: "lxc", name: "ct-test-01", status: "running" },
+      { type: "node", node: "pve-test-01" },
+      { type: "storage", storage: "local-test", "storage-type": "dir" },
+    ], await verifiedScope(remotes));
+    const lists = [() => client.getResources({ resourceType: "qemu", vmid: 105, name: "vm-test", node: "pve-test-01", status: "running", maxAge: 0 }),
+      () => client.getVmList({ name: "vm-test-01", status: "running" }), () => client.getNodeList(),
+      () => client.getContainerList({ status: "running" }), () => client.getStorageList({ type: "dir" })];
+    for (const list of lists) {
+      requests.length = 0;
+      const records = await list();
+      assert.deepEqual(records.map(record => record.remote), remotes);
+      assert.deepEqual(requests.map(request => request.url.pathname), remotes.map(remote => `/api2/json/pve/remotes/${remote}/resources`));
+      assert.ok(requests.every(request => request.url.search === ""));
+    }
+  }
+});
+
+test("list_remotes filters by exact authorized ID and sanitizes the permitted records", async () => {
+  const { client } = mockClient(() => [
+    { id: "LAB-A", type: "pve", token: "test-token", nested: { password: "test-password" } },
+    { id: "LAB-B", type: "pve" }, { id: "lab-a", type: "pve" }, { name: "LAB-A" },
+  ], await verifiedScope(["LAB-A"]));
+  assert.deepEqual(await client.getRemoteList(), [
+    { id: "LAB-A", type: "pve", token: "[REDACTED]", nested: { password: "[REDACTED]" } },
+  ]);
+});
+
+test("scoped client blocks global inventory, case changes and URL traversal at the request boundary", async () => {
+  const { client, requests } = mockClient(() => [], await verifiedScope(["LAB-A"]));
+  for (const path of ["/api2/json/resources/list", "/api2/json/pve/remotes/lab-a/qemu",
+    "/api2/json/pve/remotes/LAB-A/../LAB-B/qemu", "/api2/json/pve/remotes/LAB-A/%2e%2e/LAB-B/qemu"]) {
+    await assert.rejects(client.request(path), /^Error: Access denied\.$/);
+  }
+  assert.equal(requests.length, 0);
+});
+
+test("scoped upstream failures disclose no authorization, response body or other remote", async () => {
+  const scope = await verifiedScope(["LAB-A"]);
+  const sensitive = `LAB-B ${pdmAuthorization(config)} test-response-body`;
+  for (const executor of [async () => { throw new Error(sensitive); },
+    async () => ({ status: 403, body: sensitive }), async () => ({ status: 200, body: sensitive })]) {
+    const client = new PdmClient(config, executor, scope);
+    await assert.rejects(client.getVmList({ remote: "LAB-A" }), /^Error: PDM request failed\.$/);
+  }
+});
+
+test("disabled authentication preserves unscoped global inventory and all remotes", async () => {
+  const scope = await authenticate({ mode: "disabled" }, "Bearer malformed");
+  assert.equal(scope, undefined);
+  const { client, requests } = mockClient(() => [{ id: "LAB-A" }, { id: "LAB-B" }], scope);
+  assert.equal((await client.getRemoteList()).length, 2);
+  await client.getVmList();
+  assert.equal(requests[1].url.pathname, "/api2/json/resources/list");
+});
+
+test("concurrent callers retain isolated scope snapshots", async () => {
+  const scopeA = await verifiedScope(["LAB-A"]);
+  const scopeB = await verifiedScope(["LAB-B"]);
+  const first = mockClient(() => [{ type: "qemu", vmid: 105 }], scopeA);
+  const second = mockClient(() => [{ type: "qemu", vmid: 106 }], scopeB);
+  (scopeA.allowedRemotes as Set<string>).add("LAB-B");
+  const [a, b] = await Promise.all([first.client.getVmList(), second.client.getVmList()]);
+  assert.deepEqual(a.map(record => record.remote), ["LAB-A"]);
+  assert.deepEqual(b.map(record => record.remote), ["LAB-B"]);
+  await assert.rejects(first.client.getVmList({ remote: "LAB-B" }), /^Error: Access denied\.$/);
+  await assert.rejects(second.client.getVmList({ remote: "LAB-A" }), /^Error: Access denied\.$/);
+  assert.equal(first.requests.length, 1);
+  assert.equal(second.requests.length, 1);
+});
 
 test("generic request sends auth/TLS options, encodes query and parses data", async () => {
   let seen: PdmHttpRequest | undefined;
